@@ -3,33 +3,16 @@ const { Client } = require("pg");
 const { graphqlHTTP } = require("express-graphql");
 const joinMonster = require("join-monster");
 const graphql = require("graphql");
+const bcrypt = require("bcryptjs");
+const cfg = require("./config.js");
 
-const User = new graphql.GraphQLObjectType({
-  name: "User",
-  extensions: {
-    joinMonster: {
-      sqlTable: 'public."users"',
-      uniqueKey: "phone",
-    },
-  },
-  fields: () => ({
-    name: { type: graphql.GraphQLString },
-    lastName: { type: graphql.GraphQLString },
-    phone: { type: graphql.GraphQLString },
-    password: { type: graphql.GraphQLString },
-  }),
-});
-
-User._typeConfig = {
-  sqlTable: "users",
-  uniqueKey: "phone",
-};
+const User = require("./models/user.js");
 
 const client = new Client({
-  host: "localhost",
-  user: "postgres",
-  password: "berezovka1994",
-  database: "lang-learning",
+  host: cfg.host,
+  user: cfg.dbUser,
+  password: cfg.dbUserPassword,
+  database: cfg.dbName,
 });
 client.connect();
 
@@ -50,18 +33,41 @@ const QueryRoot = new graphql.GraphQLObjectType({
     },
     getUser: {
       type: User,
-      args: { id: { type: new graphql.GraphQLNonNull(graphql.GraphQLInt) } },
+      args: {
+        email: { type: new graphql.GraphQLNonNull(graphql.GraphQLString) },
+      },
       extensions: {
         joinMonster: {
           where: (usersTable, args, context) => {
-            return `${usersTable}.id = ${args.id}`;
+            return `${usersTable}.email = ${args.email}`;
           },
         },
       },
       resolve: (parent, args, context, resolveInfo) => {
         return joinMonster.default(resolveInfo, {}, (sql) => {
+          console.log(sql);
           return client.query(sql);
         });
+      },
+    },
+    loginUser: {
+      type: User,
+      args: {
+        email: { type: new graphql.GraphQLNonNull(graphql.GraphQLString) },
+        password: { type: new graphql.GraphQLNonNull(graphql.GraphQLString) },
+      },
+      resolve: async (parent, args, context, resolveInfo) => {
+        try {
+          const dbResponse = await client.query(
+            `SELECT FROM users WHERE email = '${args.email}' RETURNING *`
+          );
+
+          console.log(dbResponse.rows[0]);
+
+          return dbResponse;
+        } catch (err) {
+          throw new Error(err);
+        }
       },
     },
   }),
@@ -74,21 +80,20 @@ const MutationRoot = new graphql.GraphQLObjectType({
       type: User,
       args: {
         name: { type: new graphql.GraphQLNonNull(graphql.GraphQLString) },
-        lastName: {
-          type: new graphql.GraphQLNonNull(graphql.GraphQLString),
-          resolve: (user) => user.last_name,
-        },
+        email: { type: new graphql.GraphQLNonNull(graphql.GraphQLString) },
         phone: { type: new graphql.GraphQLNonNull(graphql.GraphQLString) },
         password: { type: new graphql.GraphQLNonNull(graphql.GraphQLString) },
       },
       resolve: async (parent, args, context, resolveInfo) => {
         try {
-          return (
-            await client.query(
-              "INSERT INTO users (name, last_name, phone, password) VALUES ($1, $2, $3, $4) RETURNING *",
-              [args.name, args.lastName, args.phone, args.password]
-            )
-          ).rows[0];
+          const hashedPassword = await bcrypt.hash(args.password, 12);
+
+          const dbResponse = await client.query(
+            "INSERT INTO users (name, email, phone, password) VALUES ($1, $2, $3, $4) RETURNING *",
+            [args.name, args.email, args.phone, hashedPassword]
+          );
+
+          return dbResponse.rows[0];
         } catch (err) {
           throw new Error(err);
         }
@@ -110,4 +115,5 @@ app.use(
     graphiql: true,
   })
 );
-app.listen(4000);
+
+app.listen(cfg.port);
